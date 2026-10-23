@@ -3,6 +3,7 @@
 #include <serpent/bjdata/marker.hpp>
 #include <serpent/bjdata/reader.hpp>
 #include <serpent/bjdata/soa.hpp>
+#include <serpent/limits.hpp>
 
 #include <nonstd/unaligned_ptr.hpp>
 
@@ -13,6 +14,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace bjdata_serpent {
@@ -82,6 +84,10 @@ namespace soa = serpent::bjdata::soa;
 
 [[nodiscard]] nb::object nest(const nb::object &flat, const serpent::bjdata::detail::header &info) {
     const std::span<const std::uint32_t> extents { info.extents, info.rank };
+    // The document is checked only once it has been walked, so the elements have to be counted.
+    std::uint64_t total = 1;
+    for (const auto extent : extents) total *= extent;
+    if (static_cast<std::uint64_t>(PyList_GET_SIZE(flat.ptr())) != total) raise_decode_error(errc::invalid_dimensions, 0);
     const auto strides = strides_of(extents, info.column_major);
     return nest(flat.ptr(), extents, strides, 0);
 }
@@ -143,6 +149,27 @@ public:
 class decoder {
     const decode_options &options;
     key_cache keys;
+    int depth = 0;
+
+    /**
+     * Counts a container for as long as it is being read. The document is validated only once it
+     * has been read, so the reading has to stop at the depth validation would, rather than recurse
+     * as deep as a hostile document nests.
+     */
+    class level {
+        decoder &self;
+
+    public:
+        level(decoder &self, const reader &source) : self(self) {
+            if (++self.depth > serpent::max_depth) {
+                --self.depth;
+                raise_decode_error(errc::depth_exceeded, source.offset());
+            }
+        }
+        level(const level &) = delete;
+        level &operator=(const level &) = delete;
+        ~level() { --this->self.depth; }
+    };
 
     template<typename T>
     [[nodiscard]] static T present(const std::optional<T> &value, const reader &source) {
@@ -168,7 +195,10 @@ class decoder {
     /** The elements of an array whose header has been read, into a list sized once when it is counted. */
     [[nodiscard]] nb::object list_of(const reader &source, const serpent::bjdata::detail::header &info) {
         serpent::bjdata::array_iterator element { source, info };
-        if (!info.unbounded && !source.place_in_table().in_table()) {
+        // Sized once only when the bytes are there for that many: each element takes one at least.
+        const auto *const limit = source.buffer().data() + source.buffer().size();
+        if (!info.unbounded && !source.place_in_table().in_table() && info.body != nullptr
+                && info.count <= static_cast<std::uint64_t>(limit - info.body)) {
             auto list = owned(PyList_New(static_cast<Py_ssize_t>(info.count)));
             Py_ssize_t index = 0;
             for (; element != std::default_sentinel && index < static_cast<Py_ssize_t>(info.count); ++element)
@@ -203,10 +233,15 @@ class decoder {
     /** A typed array of numbers: a numpy array of its type and shape, or (nested) lists. */
     [[nodiscard]] nb::object packed(const reader &source, const serpent::bjdata::detail::header &info) {
         if (this->options.numpy) {
+            // Checked before numpy is asked for the room: the count is the document's say-so.
+            const auto width = serpent::bjdata::payload_width(info.element);
+            const auto *const limit = source.buffer().data() + source.buffer().size();
+            if (info.body == nullptr || info.count > static_cast<std::uint64_t>(limit - info.body) / width)
+                raise_decode_error(errc::unexpected_end, source.offset());
             auto array = numpy().attr("empty")(shape_of(info), "dtype"_a = number_dtype(info.element),
                     "order"_a = info.column_major ? "F" : "C");
             const buffer_view into { array.ptr(), PyBUF_WRITABLE | PyBUF_ANY_CONTIGUOUS };
-            const auto bytes = info.count * serpent::bjdata::payload_width(info.element);
+            const auto bytes = info.count * width;
             if (bytes != 0) std::memcpy(into->buf, info.body, static_cast<std::size_t>(bytes));
             return array;
         }
@@ -355,6 +390,10 @@ class decoder {
             raise_decode_error(errc::invalid_dimensions, source.offset());
         const auto &schema = layout.fields();
         const std::byte *const container = source.data() - 1;
+        // Records of nothing but null fields take no bytes, so their count is bounded by nothing
+        // in the document: more of them than it has bytes is refused rather than made.
+        if (schema.record_bytes == 0 && layout.size() > source.buffer().size())
+            raise_decode_error(errc::dimension_overflow, source.offset());
 
         auto rows = owned(PyList_New(static_cast<Py_ssize_t>(layout.size())));
         for (std::uint64_t record = 0; record < layout.size(); ++record) {
@@ -407,11 +446,16 @@ public:
             }
             return nb::steal(number);
         }
-        case marker::array_begin: return this->array(source);
-        case marker::object_begin:
+        case marker::array_begin: {
+            const level nested { *this, source };
+            return this->array(source);
+        }
+        case marker::object_begin: {
+            const level nested { *this, source };
             // A table laid out column by column opens with `{` but is a sequence of records.
             if (source.is_array()) return this->table(source, source.container_header());
             return this->object(source);
+        }
         default: raise_decode_error(errc::unexpected_marker, source.offset());
         }
     }
@@ -424,22 +468,59 @@ void validate(std::span<const std::byte> document) {
         raise_decode_error(checked.error().code(), checked.error().offset());
 }
 
+namespace {
+
+/** The part of the document that has to be well formed: all of it, or the value it starts with. */
+[[nodiscard]] std::optional<std::span<const std::byte>> checked_part(std::span<const std::byte> document, bool whole) {
+    if (whole) return document;
+    const auto root = reader::over(document);
+    const auto *const end = root ? root.value_end() : nullptr;
+    if (end == nullptr) return std::nullopt;
+    return document.first(static_cast<std::size_t>(end - document.data()));
+}
+
+/** Raises DecodeError for what is wrong with the part of the document that has to be well formed. */
+[[noreturn]] void raise_malformed(std::span<const std::byte> document, bool whole) {
+    // A leading value that does not end is wrong somewhere before where the document would.
+    validate(checked_part(document, whole).value_or(document));
+    raise_decode_error(errc::unexpected_end, document.size()); // validates, yet did not read: not expected
+}
+
+/**
+ * The value the document starts with, and where it ends; with `whole`, only a value that is the
+ * entire document.
+ *
+ * Read first and checked after, in the one walk: the walk leaves a note of where each container
+ * it finished ended, and only a value that parses all the way through has an end. A document
+ * that does not is then validated, for what is wrong with it and where - which is also the
+ * answer when something broken trips the walk before the check is reached.
+ */
+std::pair<nb::object, std::size_t> read_value(std::span<const std::byte> document, const decode_options &options, bool whole) {
+    if (const auto root = reader::over(document)) {
+        try {
+            decoder values { options };
+            auto value = values.value(root);
+            const auto *const end = root.value_end();
+            if (end != nullptr && (!whole || end == document.data() + document.size()))
+                return { std::move(value), static_cast<std::size_t>(end - document.data()) };
+        } catch (nb::python_error &) {
+            // A hook raised, or text was not UTF-8, in a document that is otherwise fine: that is
+            // the error. Otherwise the document is broken, and validation says how.
+            const auto part = checked_part(document, whole);
+            if (part && serpent::bjdata::validate(*part)) throw;
+        }
+    }
+    raise_malformed(document, whole);
+}
+
+} // namespace
+
 nb::object decode(std::span<const std::byte> document, const decode_options &options) {
-    validate(document);
-    decoder values { options };
-    return values.value(reader::over(document));
+    return read_value(document, options, true).first;
 }
 
 nb::tuple decode_prefix(std::span<const std::byte> document, const decode_options &options) {
-    std::size_t end = 0;
-    if (const auto root = reader::over(document)) {
-        if (const auto payload = root.payload_bytes()) end = 1 + payload->size();
-    }
-    if (end == 0) {
-        validate(document);
-        raise_decode_error(errc::unexpected_end, document.size());
-    }
-    const auto value = decode(document.first(end), options);
+    auto [value, end] = read_value(document, options, false);
     return nb::make_tuple(value, end);
 }
 

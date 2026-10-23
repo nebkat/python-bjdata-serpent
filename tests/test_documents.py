@@ -97,3 +97,36 @@ def test_dump_and_load():
     bjd.dump({"a": [1, 2]}, stream, prefer="speed")
     stream.seek(0)
     assert bjd.load(stream) == {"a": [1, 2]}
+
+
+def test_hostile_nesting_is_refused_without_recursing_into_it():
+    for document in (b"[" * 1_000_000, b"{U\x01a" * 100_000, b"[#U\x01" * 1_000_000):
+        with pytest.raises(bjd.DecodeError) as raised:
+            bjd.decode(document)
+        assert raised.value.code == "depth_exceeded"
+
+
+@pytest.mark.parametrize("numpy", [False, True])
+def test_counts_the_bytes_cannot_hold_are_refused_before_anything_is_allocated(numpy):
+    for document in (b"[$l#L" + (2**40).to_bytes(8, "little"), b"[#L" + (2**40).to_bytes(8, "little") + b"U\x01",
+                     b"[$D#[L" + (2**30).to_bytes(8, "little") + b"L" + (2**30).to_bytes(8, "little") + b"]",
+                     b"[${U\x01aZ}#L" + (2**40).to_bytes(8, "little")):
+        with pytest.raises(bjd.DecodeError):
+            bjd.decode(document, numpy=numpy)
+
+
+def test_a_hook_that_raises_is_its_own_error():
+    def refuse(_):
+        raise LookupError("no")
+
+    with pytest.raises(LookupError):
+        bjd.decode(bjd.encode({"a": 1}), object_hook=refuse)
+    with pytest.raises(bjd.DecodeError, match="unexpected end"):
+        bjd.decode(bjd.encode({"a": 1})[:-1], object_hook=refuse)
+
+
+def test_decode_prefix_validates_only_the_leading_value():
+    assert bjd.decode_prefix(b"U\x01\xff\xff") == (1, 2)
+    with pytest.raises(bjd.DecodeError) as raised:
+        bjd.decode_prefix(b"[U\x01")
+    assert raised.value.code == "unexpected_end"
