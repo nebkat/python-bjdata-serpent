@@ -81,6 +81,8 @@ def test_encodes_for_speed(value, encoded):
         {"nested": {"deeper": [1, {"x": [None]}]}},
         list(range(-300, 300)),
     ],
+    # Short and ASCII: pytest puts the id in an environment variable, which Windows caps at 32767.
+    ids=lambda value: ascii(value)[:40],
 )
 @pytest.mark.parametrize("prefer", ["size", "speed"])
 def test_round_trips(value, prefer):
