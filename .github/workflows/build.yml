@@ -38,6 +38,19 @@ jobs:
         run: pip install -v '.[test,numpy]'
         shell: bash
 
+      - name: Probe
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          python -X faulthandler -u - <<'PY' 2>&1
+          import bjdata_serpent as bjd
+          for text in ["x" * n for n in (1, 200, 255, 256, 300, 1000, 5000, 20000, 100_000)] + ["\u2603", "\U0001f40d", "h\xe9llo"]:
+              print(len(text), ascii(text[:3]), flush=True)
+              data = bjd.encode(text)
+              print("  encoded", len(data), data[:6], flush=True)
+              print("  decoded", bjd.decode(data) == text, flush=True)
+          PY
+
       - name: Test
         run: python -X faulthandler -m pytest -v --tb=short -p no:cacheprovider
 
@@ -78,6 +91,9 @@ jobs:
 
       - name: Build
         run: pipx run build --sdist
+
+      - name: Use GCC 14
+        run: echo "CXX=g++-14" >> "$GITHUB_ENV"
 
       # The sdist has to build on its own, with nothing fetched: both libraries are in it.
       - name: Build a wheel from it
