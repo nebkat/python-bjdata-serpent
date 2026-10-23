@@ -1,0 +1,6 @@
+[submodule "extern/cpp-serpent"]
+	path = extern/cpp-serpent
+	url = https://github.com/nebkat/cpp-serpent.git
+[submodule "extern/cpp-unaligned"]
+	path = extern/cpp-unaligned
+	url = https://github.com/nebkat/cpp-unaligned.git
