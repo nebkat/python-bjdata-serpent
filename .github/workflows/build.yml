@@ -29,12 +29,17 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
+      # ubuntu-latest's default GCC 13 lacks std::ranges::to; 14 is installed beside it.
+      - name: Use GCC 14
+        if: runner.os == 'Linux'
+        run: echo "CXX=g++-14" >> "$GITHUB_ENV"
+
       - name: Install
         run: pip install -v '.[test,numpy]'
         shell: bash
 
       - name: Test
-        run: pytest -q
+        run: python -X faulthandler -m pytest -v --tb=short -p no:cacheprovider
 
   wheels:
     name: wheels (${{ matrix.os }})

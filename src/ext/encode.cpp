@@ -686,7 +686,7 @@ class encoder {
         std::vector<std::byte> copy;
         if (!PyBuffer_IsContiguous(&*view, 'C') || format->big_endian) {
             copy.resize(length);
-            if (PyBuffer_ToContiguous(copy.data(), &*view, view->len, 'C') < 0) propagate();
+            if (PyBuffer_ToContiguous(copy.data(), const_cast<Py_buffer *>(&*view), view->len, 'C') < 0) propagate();
             if (format->big_endian) {
                 const auto width = static_cast<std::size_t>(view->itemsize);
                 for (std::size_t at = 0; at + width <= length; at += width) std::reverse(copy.begin() + at, copy.begin() + at + width);

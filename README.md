@@ -81,4 +81,4 @@ git clone --recursive https://github.com/nebkat/python-bjdata-serpent
 pip install '.[test,numpy]' && pytest
 ```
 
-A C++23 compiler is needed: GCC 13, Clang 17, Apple Clang 15, or MSVC 19.40.
+A C++23 compiler is needed: GCC 14, Clang 17, Apple Clang 15, or MSVC 19.40.
