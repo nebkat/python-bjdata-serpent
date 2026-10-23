@@ -59,7 +59,7 @@ jobs:
         env:
           CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-*"
           CIBW_SKIP: "*-win32 *_i686 *-musllinux_*"
-          MACOSX_DEPLOYMENT_TARGET: "11.0"
+          MACOSX_DEPLOYMENT_TARGET: "13.3"  # floating-point to_chars, which serpent reaches through <format>
           CIBW_TEST_REQUIRES: pytest
           CIBW_TEST_COMMAND: pytest -q {project}/tests
 
