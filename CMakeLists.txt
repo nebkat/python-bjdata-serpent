@@ -13,11 +13,6 @@ find_package(nanobind CONFIG REQUIRED)
 # cpp-unaligned target that is already there rather than cloning its own.
 add_subdirectory(extern/cpp-unaligned EXCLUDE_FROM_ALL)
 set(SERPENT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-# Żmij, serpent's real-number writer (only to_json uses it here), does not compile with Apple
-# Clang for x86_64; std::to_chars writes the same text there.
-if(APPLE AND (CMAKE_OSX_ARCHITECTURES MATCHES "x86_64" OR (NOT CMAKE_OSX_ARCHITECTURES AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64")))
-    set(SERPENT_USE_ZMIJ OFF CACHE BOOL "" FORCE)
-endif()
 add_subdirectory(extern/cpp-serpent EXCLUDE_FROM_ALL)
 
 nanobind_add_module(_core NB_STATIC

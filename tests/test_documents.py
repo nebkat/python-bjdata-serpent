@@ -99,6 +99,22 @@ def test_dump_and_load():
     assert bjd.load(stream) == {"a": [1, 2]}
 
 
+# A table's records are objects one level inside it, so a table reaches the limit one array sooner.
+@pytest.mark.parametrize("inner, deepest", [(b"[$i#U\x02\x01\x02", 31), (b"[${U\x01aU}#U\x02\x01\x02", 30), (b"[U\x01]", 31)],
+                         ids=["typed", "table", "plain"])
+def test_validate_and_decode_agree_at_the_depth_limit(inner, deepest):
+    for depth, accepted in ((deepest, True), (deepest + 1, False)):
+        document = b"[" * depth + inner + b"]" * depth
+        if accepted:
+            bjd.validate(document)
+            bjd.decode(document)
+            continue
+        for check in (bjd.validate, bjd.decode):
+            with pytest.raises(bjd.DecodeError) as raised:
+                check(document)
+            assert raised.value.code == "depth_exceeded"
+
+
 def test_hostile_nesting_is_refused_without_recursing_into_it():
     for document in (b"[" * 1_000_000, b"{U\x01a" * 100_000, b"[#U\x01" * 1_000_000):
         with pytest.raises(bjd.DecodeError) as raised:
