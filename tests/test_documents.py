@@ -115,6 +115,13 @@ def test_validate_and_decode_agree_at_the_depth_limit(inner, deepest):
             assert raised.value.code == "depth_exceeded"
 
 
+def test_a_table_boolean_that_is_neither_true_nor_false_is_refused():
+    document = b"[${U\x01aT}#U\x03TFU"
+    for check in (bjd.validate, bjd.decode):
+        with pytest.raises(bjd.DecodeError):
+            check(document)
+
+
 def test_hostile_nesting_is_refused_without_recursing_into_it():
     for document in (b"[" * 1_000_000, b"{U\x01a" * 100_000, b"[#U\x01" * 1_000_000):
         with pytest.raises(bjd.DecodeError) as raised:
